@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Decrypt fragmented MP4 with clearkey</title>
+</head>
+<body>
+  <video id="video" autoplay></video>
+
+  <script>
+    var KEY = new Uint8Array([
+      0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77,
+      0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF
+    ]);
+
+    var KID = new Uint8Array([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+      0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
+    ]);
+
+    var video = document.getElementById('video');
+    var mediaSource = new MediaSource();
+    var type = 'video/mp4; codecs="avc1.42C01E"';
+    var sourceBuffer;
+    var idx = 0;
+    var segments = [
+      './fmp4-clearkey/init.mp4',
+      './fmp4-clearkey/seg-1.m4s',
+      './fmp4-clearkey/seg-2.m4s',
+      './fmp4-clearkey/seg-3.m4s',
+      './fmp4-clearkey/seg-4.m4s'
+    ];
+
+    function getKey(kid) {
+      return new Promise(function (resolve, reject) {
+        if (kid === toBase64(KID)) {
+          resolve(KEY);
+        } else {
+          reject();
+        }
+      });
+    }
+
+    function initializeVideo() {
+      mediaSource.addEventListener('sourceopen', initializeSourceBuffer, false);
+      video.src = URL.createObjectURL(mediaSource);
+    }
+
+    function initializeSourceBuffer() {
+      sourceBuffer = mediaSource.addSourceBuffer(type);
+      sourceBuffer.addEventListener('updateend', appendMediaSegment);
+      appendInitSegment();
+    }
+
+    function appendInitSegment() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', segments[idx++]);
+      xhr.responseType = 'arraybuffer';
+      xhr.onload = appendSegment;
+      xhr.send(null);
+    }
+
+    function appendMediaSegment() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', segments[idx++]);
+      xhr.responseType = 'arraybuffer';
+      xhr.onload = appendSegment;
+      xhr.send(null);
+    }
+
+    function appendSegment(e) {
+      sourceBuffer.appendBuffer(e.target.response);
+      if (idx > 2) {
+        sourceBuffer.removeEventListener('updateend', appendMediaSegment);
+      }
+    }
+
+    function onEncrypted(e) {
+      console.log('onEncrypted: ', e);
+      var session = video.mediaKeys.createSession();
+      session.addEventListener('message', onMessage, false);
+      console.log(new Uint8Array(e.initData).reduce(function (ac, e) { return ac + String.fromCharCode(e) }, ''));
+      session.generateRequest(e.initDataType, e.initData)
+        .catch(function (err) {
+          console.error('Failed to request license request', err);
+        });
+    }
+
+    function onMessage(e) {
+      console.log('onMessage: ', e);
+
+      generateLicense(e.message)
+        .then(function (license) {
+          console.log('license: ', license);
+    
+          var session = e.target;
+
+          session
+            .update(license)
+            .catch(function (err) {
+              console.error('Failed to update the session: ', err);
+            });
+        })
+        ;
+      
+    }
+
+    function generateLicense(message) {
+      return new Promise(function (resolve) {
+
+        const request = JSON.parse(new TextDecoder().decode(message));
+        console.assert(request.kids.length === 1);
+
+        return getKey(request.kids[0])
+          .then(function (key) {
+            const keyObj = {
+              kty: 'oct',
+              alg: 'A128KW',
+              kid: request.kids[0],
+              k: toBase64(key)
+            };
+            console.log('kid:', toHex( fromBase64(request.kids[0]) ));
+            console.log('key:', toHex( key ));
+
+            resolve(
+              new TextEncoder().encode( JSON.stringify({ keys: [keyObj] }) )
+            );
+          });
+
+      });
+    }
+
+    function toBase64(u8arr) {
+      return btoa( String.fromCharCode.apply(null, u8arr) )
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=*$/, '');
+    }
+
+    function fromBase64(b64) {
+      var binaryString = atob(b64);
+      var len = binaryString.length;
+      var u8arr = new Uint8Array(len);
+      for (var i = 0; i < len; i++) {
+        u8arr[i] = binaryString.charCodeAt(i);
+      }
+      return u8arr;
+    }
+
+    function toHex(u8arr) {
+      return u8arr.reduce(function (ac, u8) {
+        return ac + ('0' + u8.toString(16)).slice(-2);
+      }, '');
+    }
+
+    var config = [{
+      initDataTypes: ['cenc'],
+      videoCapabilities: [{
+        contentType: 'video/mp4; codecs="avc1.42C01E"'
+      }]
+    }];
+    var video = document.getElementById("video");
+    video.addEventListener('encrypted', onEncrypted, false);
+
+    navigator
+      .requestMediaKeySystemAccess('org.w3.clearkey', config)
+      .then(function(keySystemAccess) {
+        console.log('keySystemAccess');
+        return keySystemAccess.createMediaKeys();
+      })
+      .then(function(createdMediaKeys) {
+        console.log('createdMediaKeys');
+        video.setMediaKeys(createdMediaKeys);
+      })
+      .catch(function(err) {
+        console.error('Failed to set up MediaKeys', err);
+      })
+      ;
+
+    initializeVideo();
+
+  </script>
+</body>
+</html>

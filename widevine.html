@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Decrypt Widevine-protected contents</title>
+</head>
+<body>
+  <video id="video" autoplay></video>
+
+  <script>
+    var video = document.getElementById('video');
+    var mediaSource = new MediaSource();
+    var type = 'video/mp4; codecs="avc1.4d401f"';
+    var sourceBuffer;
+    var mp4 = 'https://example.com/360p_video_dashinit.mp4';
+    var idx = 0;
+    var mediaRanges = [
+      '11881-17084',
+      '17085-558548',
+      '558549-1257330'
+    ];
+
+    function getKey(challenge) {
+      return new Promise(function (resolve) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', 'http://widevine-license-example.com/LicenseChallenge/10', true);
+        xhr.responseType = 'arraybuffer';
+        xhr.onload = function () {
+          resolve( this.response );
+        };
+        xhr.send(challenge);
+      });
+    }
+
+    function initializeVideo() {
+      mediaSource.addEventListener('sourceopen', initializeSourceBuffer, false);
+      video.src = URL.createObjectURL(mediaSource);
+    }
+
+    function initializeSourceBuffer() {
+      sourceBuffer = mediaSource.addSourceBuffer(type);
+      sourceBuffer.addEventListener('updateend', appendMediaSegment);
+      appendInitSegment();
+    }
+
+    function appendInitSegment() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', mp4);
+      xhr.responseType = 'arraybuffer';
+      xhr.setRequestHeader('Range', 'bytes=0-11880');
+      xhr.onload = appendSegment;
+      xhr.send(null);
+    }
+
+    function appendMediaSegment() {
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', mp4);
+      xhr.responseType = 'arraybuffer';
+      xhr.setRequestHeader('Range', 'bytes=' + mediaRanges[idx++]);
+      xhr.onload = appendSegment;
+      xhr.send(null);
+    }
+
+    function appendSegment(e) {
+      sourceBuffer.appendBuffer(e.target.response);
+      if (idx > 2) {
+        sourceBuffer.removeEventListener('updateend', appendMediaSegment);
+      }
+    }
+
+    function onEncrypted(e) {
+      console.log('onEncrypted: ', e);
+      var session = video.mediaKeys.createSession();
+      session.addEventListener('message', onMessage, false);
+      session.generateRequest(e.initDataType, e.initData)
+        .catch(function (err) {
+          console.error('Failed to request license request', err);
+        });
+    }
+
+    function onMessage(e) {
+      console.log('onMessage: ', e);
+
+      generateLicense(e.message)
+        .then(function (license) {
+          console.log('license: ', license);
+    
+          var session = e.target;
+
+          session
+            .update(license)
+            .catch(function (err) {
+              console.error('Failed to update the session: ', err);
+            });
+        })
+        ;
+      
+    }
+
+    function generateLicense(message) {
+      return new Promise(function (resolve) {
+
+        var challenge = message;
+
+        return getKey(challenge)
+        .then(function (key) {
+          resolve(key);
+        });
+
+      });
+    }
+
+    var config = [{
+      initDataTypes: ['keyids', 'cenc'],
+      videoCapabilities: [{
+        contentType: 'video/mp4; codecs="avc1.4d401f"'
+      }]
+    }];
+    var video = document.getElementById("video");
+    video.addEventListener('encrypted', onEncrypted, false);
+
+    navigator
+      .requestMediaKeySystemAccess('com.widevine.alpha', config)
+      .then(function(keySystemAccess) {
+        console.log('keySystemAccess');
+        return keySystemAccess.createMediaKeys();
+      })
+      .then(function(createdMediaKeys) {
+        console.log('createdMediaKeys');
+        video.setMediaKeys(createdMediaKeys);
+      })
+      .catch(function(err) {
+        console.error('Failed to set up MediaKeys', err);
+      })
+      ;
+
+    initializeVideo();
+
+  </script>
+</body>
+</html>
